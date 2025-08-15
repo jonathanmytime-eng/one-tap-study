@@ -7,15 +7,9 @@
   <style>
     body { font-family: system-ui, sans-serif; background:#0b1220; color:#e5e7eb; text-align:center; padding:20px; }
     h1 { font-size:18px; margin:0 0 12px; }
-    .top { display:flex; gap:8px; justify-content:center; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
-    input[type="text"]{ width:60%; max-width:680px; padding:10px 12px; border-radius:10px; border:1px solid #1f2937; background:#0f172a; color:#e5e7eb; }
-    button { margin:6px; padding:12px 18px; border:none; border-radius:10px; font-size:16px; cursor:pointer; color:white; }
-    #loadCsvBtn { background:#3b82f6; }
-    #loadDueBtn { background:#8b5cf6; }
-    #demoBtn { background:#64748b; }
-    #saveBtn { background:#10b981; }
     .card { margin:16px auto; padding:36px; background:#0f172a; border:1px solid #1f2937; border-radius:14px; max-width:820px; min-height:30vh; font-size:clamp(22px,5vw,40px); display:flex; align-items:center; justify-content:center; }
     .controls { margin-top:10px; display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }
+    button { margin:6px; padding:12px 18px; border:none; border-radius:10px; font-size:16px; cursor:pointer; color:white; }
     .again { background:#ef4444; }
     .good { background:#06b6d4; }
     .easy { background:#10b981; }
@@ -24,19 +18,8 @@
 </head>
 <body>
   <h1>📚 One-Tap Study (SRS) <span id="status">(loading…)</span></h1>
-  <div class="top">
-    <input id="csvUrl" type="text" placeholder="CSV link (…/pub?output=csv) — optional" />
-    <input id="relayUrl" type="text" placeholder="Optional CORS relay (Apps Script …/exec)" />
-    <button id="loadCsvBtn">Load CSV</button>
-  </div>
-  <div class="top">
-    <input id="apiUrl" type="text" placeholder="Apps Script endpoint (…/exec) for SRS" />
-    <button id="loadDueBtn">Load DUE</button>
-    <button id="saveBtn">Save URLs</button>
-    <button id="demoBtn">Demo</button>
-  </div>
 
-  <div class="card" id="card">Paste your CSV URL above and click Load, or click Demo to try.</div>
+  <div class="card" id="card">Loading…</div>
   <div class="controls">
     <button class="again" onclick="grade('again')">Again</button>
     <button class="good" onclick="grade('good')">Good</button>
@@ -44,73 +27,48 @@
   </div>
 
   <script>
-    let queue = [], idx = 0;
+    let queue = [], idx = 0, apiUrl = null;
     const cardEl = document.getElementById('card');
     const statusEl = document.getElementById('status');
 
     function show(){
       const item = queue[idx];
-      cardEl.textContent = item ? item : 'Done for now! 🎉';
+      cardEl.textContent = item ? item.front : 'No cards due right now';
     }
 
-    function grade(type){
+    async function grade(type){
       if (!queue[idx]) return;
-      if (type==='again') queue.splice(Math.min(queue.length, idx+3),0,queue[idx]);
+      const card = queue[idx];
+      try {
+        await fetch(apiUrl + '?grade=' + type + '&id=' + encodeURIComponent(card.id));
+      } catch(e){ console.error(e); }
       queue.splice(idx,1);
       if (idx>=queue.length) idx = queue.length-1;
       if (idx<0) idx=0;
       show();
     }
 
-    function parseCSV(text){
-      return text.trim().split(/\r?\n/).map(l=>l.split(','));
-    }
-
-    function normalizeCsvUrl(u){
+    async function loadDue(){
+      if (!apiUrl) { cardEl.textContent='Missing ?api=… in URL'; return; }
       try {
-        const url = new URL(u);
-        if (/output=csv/i.test(url.search)) return url.toString();
-        if (/\/pubhtml$/i.test(url.pathname)) return url.toString().replace(/\/pubhtml$/i, '/pub?output=csv');
-        if (/\/edit/i.test(url.pathname)){
-          const gid = url.searchParams.get('gid') || '0';
-          return `${url.origin}${url.pathname.replace(/\/edit.*/, '')}/export?format=csv&gid=${gid}`;
-        }
-        return url.toString();
-      } catch { return u; }
-    }
-
-    async function loadCsv(){
-      try {
-        const rawUrl = document.getElementById('csvUrl').value.trim();
-        if (!rawUrl) return alert('Paste CSV URL');
-        const normUrl = normalizeCsvUrl(rawUrl);
-        const relay = document.getElementById('relayUrl').value.trim();
-        const fetchUrl = relay
-          ? (relay + (relay.includes('?') ? '&' : '?') + 'url=' + encodeURIComponent(normUrl))
-          : normUrl;
-        const resp = await fetch(fetchUrl, { cache: 'no-store', redirect: 'follow' });
-        if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
-        const text = await resp.text();
-        const rows = parseCSV(text);
-        queue = rows.slice(1).map(r=>r[1]).filter(Boolean);
-        if (!queue.length) { cardEl.textContent='No rows found (need timestamp,front).'; return; }
+        const resp = await fetch(apiUrl+'?due=1',{cache:'no-store'});
+        const data = await resp.json();
+        queue = data.cards || [];
         idx=0; show();
-      } catch(e){ cardEl.textContent='Error loading CSV: '+(e.message||e); }
+        statusEl.textContent = '✅ Loaded ' + queue.length + ' cards';
+      } catch(e){
+        cardEl.textContent='Error: '+e.message;
+        statusEl.textContent='⚠️ Load error';
+      }
     }
 
-    function demo(){
-      queue = ["Hola","Bonjour","Hello world"];
-      idx=0;
-      show();
-      statusEl.textContent = '✅ Demo loaded';
-    }
-
-    // Hook buttons
-    document.getElementById('demoBtn').onclick = demo;
-    document.getElementById('loadCsvBtn').onclick = loadCsv;
-
-    window.addEventListener('load',()=>{ statusEl.textContent='✅ script loaded'; });
-    window.addEventListener('error', e=>{ statusEl.textContent='⚠️ '+(e.message||'script error'); });
+    window.addEventListener('load',()=>{
+      const p = new URLSearchParams(location.search);
+      apiUrl = p.get('api');
+      if (p.get('auto')) loadDue(); else cardEl.textContent='Ready.';
+      if (p.get('kiosk')) document.querySelector('h1').style.display='none';
+      statusEl.textContent='✅ script loaded';
+    });
   </script>
 </body>
 </html>
